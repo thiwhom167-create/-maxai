@@ -7,6 +7,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 import uvicorn
+import base64
+
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
+DATA_DIR = "data"
 
 AI_URL = os.environ.get("AI_URL", "https://api.groq.com/openai/v1")
 AI_KEY = os.environ.get("AI_KEY", "")
@@ -107,6 +112,9 @@ TOOLS_DESC = """
 - build_site(prompt): build website
 - gen_code(desc, filename): write code
 - ask(prompt): ask AI
+- save_data(name, content): save data permanently (GitHub)
+- load_data(name): load saved data
+- list_data(): list all saved data
 """
 
 
@@ -165,6 +173,7 @@ def run_tool(name, args):
         "curl": _curl, "post": _post, "download": _download,
         "search": _search, "scrape": _scrape,
         "build_site": _build_site, "gen_code": _gen_code, "ask": _ask,
+        "save_data": _gh_save, "load_data": _gh_load, "list_data": _gh_list,
     }
     fn = fns.get(name)
     if not fn:
@@ -359,6 +368,64 @@ def _gen_code(desc, filename="main.py"):
 
 def _ask(prompt):
     return ask_ai(prompt)
+
+
+def _gh_save(filename, content):
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return "GitHub not configured"
+    import base64
+    path = DATA_DIR + "/" + filename
+    url = "https://api.github.com/repos/" + GITHUB_REPO + "/contents/" + path
+    headers = {
+        "Authorization": "token " + GITHUB_TOKEN,
+        "Accept": "application/vnd.github+json",
+    }
+    sha = None
+    r = requests.get(url, headers=headers, timeout=15)
+    if r.status_code == 200:
+        sha = r.json().get("sha")
+    data = {
+        "message": "Update " + filename,
+        "content": base64.b64encode(content.encode("utf-8")).decode(),
+    }
+    if sha:
+        data["sha"] = sha
+    r = requests.put(url, json=data, headers=headers, timeout=20)
+    if r.status_code in (200, 201):
+        return "saved to github: " + path
+    return "github error: " + r.text[:200]
+
+
+def _gh_load(filename):
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return "GitHub not configured"
+    import base64
+    path = DATA_DIR + "/" + filename
+    url = "https://api.github.com/repos/" + GITHUB_REPO + "/contents/" + path
+    headers = {
+        "Authorization": "token " + GITHUB_TOKEN,
+        "Accept": "application/vnd.github+json",
+    }
+    r = requests.get(url, headers=headers, timeout=15)
+    if r.status_code != 200:
+        return "not found"
+    content = r.json().get("content", "")
+    return base64.b64decode(content).decode("utf-8")
+
+
+def _gh_list():
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return "GitHub not configured"
+    url = "https://api.github.com/repos/" + GITHUB_REPO + "/contents/" + DATA_DIR
+    headers = {
+        "Authorization": "token " + GITHUB_TOKEN,
+        "Accept": "application/vnd.github+json",
+    }
+    r = requests.get(url, headers=headers, timeout=15)
+    if r.status_code != 200:
+        return "(empty)"
+    items = r.json()
+    return "\n".join([i["name"] for i in items]) or "(empty)"
 
 
 class LoginReq(BaseModel):
