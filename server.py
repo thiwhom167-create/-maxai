@@ -387,6 +387,13 @@ async def run(r: RunReq, authorization: str = Header(None)):
     return agent_run(r.text)
 
 
+@app.post("/api/chat")
+async def chat(r: RunReq, authorization: str = Header(None)):
+    check_auth(authorization)
+    reply = ask_ai(r.text, system="You are MAXAI, a helpful assistant. Answer in Thai naturally.")
+    return {"reply": reply, "log": "USER: " + r.text + "\nAI: " + reply, "answer": reply}
+
+
 @app.get("/api/projects")
 async def projects(authorization: str = Header(None)):
     check_auth(authorization)
