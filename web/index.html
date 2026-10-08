@@ -9,6 +9,9 @@
 <title>MAXAI</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="stylesheet" href="/static/style.css">
+<style>
+.mode-btn{background:#a78bfa;color:#000;border:none;border-radius:10px;padding:0 14px;font-size:18px;cursor:pointer;min-width:50px;margin-right:6px;}
+</style>
 </head>
 <body>
 <header class="header">
@@ -32,6 +35,7 @@
   <div class="input-bar">
     <textarea id="input" rows="1" placeholder="พิมพ์อะไรก็ได้..."
               onkeydown="key(event)" oninput="rz(this)"></textarea>
+    <button class="mode-btn" id="modeBtn" onclick="toggleMode()">💬</button>
     <button class="send-btn" id="sendBtn" onclick="send()">▶</button>
   </div>
 </main>
