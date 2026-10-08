@@ -235,7 +235,7 @@ def run_tool(name, args):
 def _shell(cmd):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True,
-                          text=True, timeout=120, cwd=WORKSPACE)
+                          text=True, timeout=600, cwd=WORKSPACE)
         out = "Exit " + str(r.returncode) + "\n"
         if r.stdout:
             out += r.stdout[:3000] + "\n"
