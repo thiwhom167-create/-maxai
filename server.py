@@ -133,18 +133,15 @@ def agent_run(task, max_steps=15):
     history = []
     for step in range(max_steps):
         hist = "\n".join(history[-8:])
-        system = (
-            "You are MAXAI.\nTools:\n" + TOOLS_DESC +
-            "\nHistory:\n" + hist +
-            '\nRespond JSON: {"tool":"name","args":{...}} or '
-            '{"tool":"__done__","args":{"answer":"..."}}'
-        )
-        raw = ask_ai("Task: " + task, system=system, json_mode=True)
+        sys_msg = AGENT_SYS
+        if hist:
+            sys_msg += "\n\nHISTORY:\n" + hist
+        raw = ask_ai("Task: " + task, system=sys_msg, json_mode=True)
         try:
             d = json.loads(strip_fence(raw))
         except:
-            log.append("parse error: " + raw[:200])
-            break
+            log.append("AI: " + raw[:500])
+            return {"ok": True, "log": "\n".join(log), "answer": raw[:500]}
         name = d.get("tool")
         args = d.get("args", {})
         log.append("[" + str(name) + "] " + str(args)[:120])
