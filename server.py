@@ -7,6 +7,107 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 import uvicorn
+import socket
+import time
+import shutil
+from fastapi import Request
+
+RUNNING = {}
+
+
+def free_port(start=9000, end=9999):
+    for p in range(start, end):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", p)) != 0:
+                return p
+    return start
+
+
+def wait_port(port, timeout=20):
+    t = time.time()
+    while time.time() - t < timeout:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                return True
+        time.sleep(0.3)
+    return False
+
+
+def stop_app(project):
+    if project in RUNNING:
+        info = RUNNING[project]
+        try:
+            info["proc"].terminate()
+            info["proc"].wait(timeout=5)
+        except:
+            try:
+                info["proc"].kill()
+            except:
+                pass
+        del RUNNING[project]
+
+
+def run_project(project):
+    stop_app(project)
+    base = os.path.join(WORKSPACE, project)
+    if not os.path.isdir(base):
+        return {"ok": False, "log": "not found"}
+    entry = None
+    for name in ["app.py", "main.py", "server.py", "index.html"]:
+        if os.path.isfile(os.path.join(base, name)):
+            entry = name
+            break
+    if not entry:
+        return {"ok": False, "log": "no entry file"}
+    port = free_port()
+
+    # Static only -> serve via /site/
+    if entry == "index.html":
+        RUNNING[project] = {"type": "static", "port": 0, "entry": entry}
+        return {"ok": True, "log": "static site ready",
+                "url": "/site/" + project + "/index.html",
+                "port": 0, "type": "static"}
+
+    # Install requirements
+    req = os.path.join(base, "requirements.txt")
+    if os.path.isfile(req):
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", req, "-q"],
+                timeout=300, cwd=base, capture_output=True)
+        except:
+            pass
+
+    # Detect framework
+    with open(os.path.join(base, entry), encoding="utf-8") as f:
+        code = f.read().lower()
+
+    env = os.environ.copy()
+    env["PORT"] = str(port)
+
+    if "fastapi" in code:
+        cmd = [sys.executable, "-m", "uvicorn", entry[:-3] + ":app",
+               "--host", "127.0.0.1", "--port", str(port)]
+    elif entry.endswith(".js"):
+        cmd = ["node", entry]
+    else:
+        cmd = [sys.executable, entry]
+
+    try:
+        proc = subprocess.Popen(cmd, cwd=base, env=env,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT)
+        if not wait_port(port, timeout=25):
+            return {"ok": False, "log": "server timeout"}
+        RUNNING[project] = {"type": "app", "port": port,
+                           "proc": proc, "entry": entry}
+        return {"ok": True,
+                "log": "running on port " + str(port),
+                "url": "/app/" + project + "/",
+                "port": port, "type": "app"}
+    except Exception as e:
+        return {"ok": False, "log": str(e)}
+
 import base64
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
@@ -625,6 +726,68 @@ def _forget(key):
         save_memory(mem)
         return "forgot: " + key
     return "not found"
+
+
+def _build_and_run(prompt):
+    """สร้างเว็บ + รันอัตโนมัติ"""
+    system = (
+        "สร้างเว็บจากคำสั่งผู้ใช้ ตอบเป็น JSON:\n"
+        '{"project":"shop","title":"x","stack":"static|flask|fastapi",'
+        '"entry":"index.html หรือ app.py","requirements":["flask"],'
+        '"files":[{"path":"...","content":"..."}]}\n'
+        "กฎ:\n"
+        "- static: HTML/CSS/JS\n"
+        "- flask: Python + Flask + os.environ.get(\"PORT\",8000) + host=0.0.0.0\n"
+        "- fastapi: Python + FastAPI + uvicorn\n"
+        "- ภาษาไทย ข้อมูลตัวอย่าง สวย responsive\n"
+        "- ห้าม external API ที่ต้อง key"
+    )
+    raw = ask_ai(prompt, system=system, json_mode=True, timeout=300)
+    try:
+        d = json.loads(strip_fence(raw))
+    except Exception as e:
+        return "error: " + str(e)
+
+    project = "".join(c for c in d.get("project", "app").lower()
+                     if c.isalnum() or c == "_") or "app"
+    files = d.get("files", [])
+    if not files:
+        return "no files"
+
+    base = os.path.join(WORKSPACE, project)
+    if os.path.isdir(base):
+        shutil.rmtree(base)
+    os.makedirs(base, exist_ok=True)
+
+    log = ["project: " + project, "files: " + str(len(files))]
+
+    for f in files:
+        p = f.get("path", "").strip()
+        c = f.get("content", "")
+        if not p or ".." in p:
+            continue
+        full = os.path.join(base, p)
+        os.makedirs(os.path.dirname(full) or base, exist_ok=True)
+        with open(full, "w", encoding="utf-8") as fp:
+            fp.write(c)
+        log.append("  " + p)
+
+    # Write requirements.txt
+    reqs = d.get("requirements", [])
+    if reqs:
+        with open(os.path.join(base, "requirements.txt"), "w") as f:
+            f.write("\n".join(reqs))
+        log.append("requirements: " + ",".join(reqs))
+
+    # Auto-run
+    result = run_project(project)
+    log.append(result.get("log", ""))
+
+    if result.get("ok"):
+        return ("OK\n" + "\n".join(log) +
+                "\nURL: " + result["url"] +
+                "\nPREVIEW:" + result["url"])
+    return "run failed\n" + "\n".join(log)
 
 
 class LoginReq(BaseModel):
