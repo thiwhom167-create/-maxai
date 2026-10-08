@@ -1,5 +1,5 @@
 # MAXAI v2
-import os, io, json, ast, zipfile, subprocess, sys, secrets
+import os, io, json, ast, zipfile, subprocess, sys, secrets, shlex, tempfile
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import HTMLResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -145,11 +145,12 @@ def strip_fence(t):
 
 
 TOOLS_DESC = """
-- shell(cmd): run shell command
-- python(code): run python code
-- write(path, content): write file
-- read(path): read file
-- ls(path): list directory
+- projects(): list available projects
+- shell(cmd, project="default"): run shell command inside the selected project
+- python(code, project="default"): run python code inside the selected project
+- write(path, content, project="default"): write file inside the selected project
+- read(path, project="default"): read file inside the selected project
+- ls(path=".", project="default"): list directory inside the selected project
 - install(package): pip install
 - curl(url): HTTP GET
 - post(url, data): HTTP POST
@@ -218,6 +219,7 @@ def agent_run(task, max_steps=15):
 
 def run_tool(name, args):
     fns = {
+        "projects": _projects,
         "shell": _shell, "python": _python, "write": _write,
         "read": _read, "ls": _ls, "install": _install,
         "curl": _curl, "post": _post, "download": _download,
@@ -232,10 +234,106 @@ def run_tool(name, args):
     return fn(**args)
 
 
-def _shell(cmd):
+SAFE_SHELL_COMMANDS = {
+    "pwd", "ls", "find", "cat", "head", "tail", "grep", "sed", "awk",
+    "mkdir", "touch", "cp", "mv", "rm", "tar", "zip", "unzip",
+    "python", "python3", "pip", "pip3", "node", "npm", "npx",
+    "git", "pytest", "uvicorn"
+}
+
+
+def _safe_project_name(project):
+    project = str(project or "").strip()
+    if not project or project in (".", ".."):
+        raise ValueError("invalid project")
+    if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-." for ch in project):
+        raise ValueError("invalid project name")
+    if ".." in project:
+        raise ValueError("invalid project name")
+    return project
+
+
+def _project_root(project="default"):
+    name = _safe_project_name(project)
+    root = os.path.abspath(os.path.join(WORKSPACE, name))
+    workspace_root = os.path.abspath(WORKSPACE)
+    if os.path.commonpath([workspace_root, root]) != workspace_root:
+        raise ValueError("project outside workspace")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _project_path(project="default", path=".", allow_root=True):
+    root = _project_root(project)
+    path = str(path if path is not None else ".").strip()
+    if os.path.isabs(path):
+        raise ValueError("absolute paths are not allowed")
+    if "\x00" in path:
+        raise ValueError("invalid path")
+    normalized = os.path.normpath(path or ".")
+    if normalized == ".." or normalized.startswith(".." + os.sep):
+        raise ValueError("path traversal blocked")
+    full = os.path.abspath(os.path.join(root, normalized))
+    if os.path.commonpath([root, full]) != root:
+        raise ValueError("path outside project")
+    real_root = os.path.realpath(root)
+    real_full = os.path.realpath(full)
+    if os.path.commonpath([real_root, real_full]) != real_root:
+        raise ValueError("path outside project")
+    if not allow_root and real_full == real_root:
+        raise ValueError("project root is not a file")
+    return full
+
+
+def _projects():
     try:
+        names = []
+        for name in sorted(os.listdir(WORKSPACE)):
+            if name.startswith("_") or ".." in name:
+                continue
+            p = os.path.join(WORKSPACE, name)
+            if os.path.isdir(p):
+                names.append(name)
+        return "\n".join(names) or "(empty)"
+    except Exception as e:
+        return "error: " + str(e)
+
+
+def _validate_shell(cmd, project):
+    if not isinstance(cmd, str) or not cmd.strip():
+        raise ValueError("empty command")
+    blocked = ("..", "&&", "||", ";", "$(", "\n", "\r")
+    if any(x in cmd for x in blocked) or chr(96) in cmd:
+        raise ValueError("shell escape/traversal syntax blocked")
+    try:
+        tokens = shlex.split(cmd)
+    except Exception as e:
+        raise ValueError("invalid shell syntax: " + str(e))
+    if not tokens:
+        raise ValueError("empty command")
+    exe = os.path.basename(tokens[0])
+    if exe not in SAFE_SHELL_COMMANDS:
+        raise ValueError("command not allowed: " + exe)
+    if exe in ("python", "python3", "node", "npx") and any(x in tokens for x in ("-c", "-e", "--eval")):
+        raise ValueError("inline code execution through shell is blocked")
+    for token in tokens[1:]:
+        if token.startswith("/") or token.startswith("~"):
+            raise ValueError("absolute paths are not allowed")
+        if token in (".", "./"):
+            continue
+        if "/" in token or token.startswith("."):
+            if token.startswith("-"):
+                continue
+            _project_path(project, token)
+    return tokens
+
+
+def _shell(cmd, project="default"):
+    try:
+        root = _project_root(project)
+        _validate_shell(cmd, project)
         r = subprocess.run(cmd, shell=True, capture_output=True,
-                          text=True, timeout=600, cwd=WORKSPACE)
+                          text=True, timeout=600, cwd=root)
         out = "Exit " + str(r.returncode) + "\n"
         if r.stdout:
             out += r.stdout[:3000] + "\n"
@@ -246,13 +344,22 @@ def _shell(cmd):
         return "error: " + str(e)
 
 
-def _python(code):
-    path = os.path.join(WORKSPACE, "_run.py")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(code)
+def _python(code, project="default"):
+    root = _project_root(project)
+    path = None
     try:
+        if not isinstance(code, str):
+            return "error: invalid code"
+        if ".." in code or "\x00" in code:
+            return "error: traversal/invalid syntax blocked"
+        for marker in ("open('/", 'open("/', "os.system(", "subprocess.", "shutil.rmtree("):
+            if marker in code:
+                return "error: code attempts unrestricted filesystem/process access"
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".py", prefix=".maxai_", dir=root, delete=False) as f:
+            path = f.name
+            f.write(code)
         r = subprocess.run([sys.executable, path], capture_output=True,
-                          text=True, timeout=60, cwd=WORKSPACE)
+                          text=True, timeout=120, cwd=root)
         out = "Exit " + str(r.returncode) + "\n"
         if r.stdout:
             out += r.stdout[:2500] + "\n"
@@ -261,35 +368,44 @@ def _python(code):
         return out
     except Exception as e:
         return "error: " + str(e)
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
 
-def _write(path, content):
-    if not os.path.isabs(path):
-        path = os.path.join(WORKSPACE, path)
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
-    return "written " + path
+def _write(path, content, project="default"):
+    try:
+        full = _project_path(project, path, allow_root=False)
+        os.makedirs(os.path.dirname(full) or _project_root(project), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(content)
+        return "written " + os.path.relpath(full, _project_root(project))
+    except Exception as e:
+        return "error: " + str(e)
 
 
-def _read(path):
-    if not os.path.isabs(path):
-        path = os.path.join(WORKSPACE, path)
-    if not os.path.isfile(path):
+def _read(path, project="default"):
+    try:
+        full = _project_path(project, path, allow_root=False)
+    except Exception as e:
+        return "error: " + str(e)
+    if not os.path.isfile(full):
         return "not found"
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(full, encoding="utf-8") as f:
             return f.read()[:8000]
     except Exception as e:
         return "error: " + str(e)
 
 
-def _ls(path="."):
-    if not os.path.isabs(path):
-        path = os.path.join(WORKSPACE, path)
+def _ls(path=".", project="default"):
     try:
-        items = os.listdir(path)
-        return "\n".join(items[:100]) or "(empty)"
+        full = _project_path(project, path)
+        items = os.listdir(full)
+        return "\n".join(items[:200]) or "(empty)"
     except Exception as e:
         return "error: " + str(e)
 
@@ -324,19 +440,18 @@ def _post(url, data):
         return "error: " + str(e)
 
 
-def _download(url, path=""):
+def _download(url, path="", project="default"):
     if not path:
         path = url.split("/")[-1].split("?")[0] or "download.bin"
-    if not os.path.isabs(path):
-        path = os.path.join(WORKSPACE, path)
     try:
+        full = _project_path(project, path, allow_root=False)
         r = requests.get(url, stream=True, timeout=60,
                         headers={"User-Agent": "Mozilla/5.0"})
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "wb") as f:
+        os.makedirs(os.path.dirname(full) or _project_root(project), exist_ok=True)
+        with open(full, "wb") as f:
             for chunk in r.iter_content(8192):
                 f.write(chunk)
-        return "downloaded " + path
+        return "downloaded " + os.path.relpath(full, _project_root(project))
     except Exception as e:
         return "error: " + str(e)
 
@@ -384,24 +499,32 @@ def _build_site(prompt):
     except Exception as e:
         return "error: " + str(e)
     project = "".join(c for c in d.get("project", "site").lower()
-                     if c.isalnum() or c == "_") or "site"
+                     if c.isalnum() or c in "_-") or "site"
     files = d.get("files", [])
     if not files:
         return "no files"
-    base = os.path.join(WORKSPACE, project)
+    try:
+        base = _project_root(project)
+    except Exception as e:
+        return "error: " + str(e)
+    written = 0
     for f in files:
         p = f.get("path", "").strip()
-        c = f.get("content", "")
-        if not p or ".." in p:
+        content = f.get("content", "")
+        if not p:
             continue
-        full = os.path.join(base, p)
+        try:
+            full = _project_path(project, p, allow_root=False)
+        except Exception:
+            continue
         os.makedirs(os.path.dirname(full) or base, exist_ok=True)
         with open(full, "w", encoding="utf-8") as fp:
-            fp.write(c)
-    return "OK " + project + " (" + str(len(files)) + " files)\n/site/" + project + "/index.html"
+            fp.write(content)
+        written += 1
+    return "OK " + project + " (" + str(written) + " files)\n/site/" + project + "/index.html"
 
 
-def _gen_code(desc, filename="main.py"):
+def _gen_code(desc, filename="main.py", project="default"):
     lang = "python"
     if filename.endswith(".js"):
         lang = "javascript"
@@ -413,8 +536,8 @@ def _gen_code(desc, filename="main.py"):
         "Write " + lang + " code: " + desc,
         system="Write complete " + lang + " code. Only code.")
     code = strip_fence(raw)
-    _write(filename, code)
-    return "OK " + filename
+    _write(filename, code, project=project)
+    return "OK " + project + "/" + filename
 
 
 def _ask(prompt):
@@ -558,24 +681,36 @@ async def chat(r: RunReq, authorization: str = Header(None)):
 async def projects(authorization: str = Header(None)):
     check_auth(authorization)
     out = []
-    for name in os.listdir(WORKSPACE):
-        if name.startswith("_"):
+    for name in sorted(os.listdir(WORKSPACE)):
+        if name.startswith("_") or ".." in name:
             continue
         p = os.path.join(WORKSPACE, name)
-        if os.path.isdir(p):
-            files = []
-            for root, _, fs in os.walk(p):
-                for f in fs:
-                    files.append(os.path.relpath(os.path.join(root, f), p))
-            out.append({"name": name, "files": files})
+        if not os.path.isdir(p):
+            continue
+        try:
+            root = _project_root(name)
+        except Exception:
+            continue
+        files = []
+        for walk_root, _, fs in os.walk(root):
+            for fname in fs:
+                fp = os.path.join(walk_root, fname)
+                try:
+                    safe = _project_path(name, os.path.relpath(fp, root), allow_root=False)
+                    files.append(os.path.relpath(safe, root))
+                except Exception:
+                    continue
+        out.append({"name": name, "files": files})
     return {"projects": out}
 
 
 @app.get("/api/download/{project}")
 async def download(project: str, authorization: str = Header(None)):
     check_auth(authorization)
-    project = "".join(c for c in project if c.isalnum() or c == "_")
-    full = os.path.join(WORKSPACE, project)
+    try:
+        full = _project_root(project)
+    except Exception:
+        raise HTTPException(400)
     if not os.path.exists(full):
         raise HTTPException(404)
     buf = io.BytesIO()
@@ -599,15 +734,12 @@ async def download(project: str, authorization: str = Header(None)):
 
 @app.get("/site/{project}/{path:path}")
 async def site(project: str, path: str = "index.html"):
-    project = "".join(c for c in project if c.isalnum() or c in "_-.")
-    if not project or ".." in path:
-        raise HTTPException(400)
-    base = os.path.abspath(os.path.join(WORKSPACE, project))
-    full = os.path.abspath(os.path.join(base, path))
-    if not full.startswith(base):
+    try:
+        full = _project_path(project, path)
+    except Exception:
         raise HTTPException(403)
     if os.path.isdir(full):
-        full = os.path.join(full, "index.html")
+        full = _project_path(project, os.path.join(path, "index.html"))
     if not os.path.isfile(full):
         raise HTTPException(404)
     ext = os.path.splitext(full)[1].lower()
