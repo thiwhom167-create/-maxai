@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="MAXAI">
+<title>MAXAI</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="header">
+  <div class="logo">MAXAI</div>
+  <div class="right">
+    <span id="status" class="status">...</span>
+    <button class="icon-btn" onclick="toggleMenu()">☰</button>
+  </div>
+</header>
+<main class="main">
+  <div id="log" class="log"></div>
+  <div class="quick">
+    <button onclick="q('สร้างเว็บร้านค้า')">ร้านค้า</button>
+    <button onclick="q('สร้าง portfolio')">Portfolio</button>
+    <button onclick="q('เขียนโค้ด calculator เก็บใน calc.py แล้วรัน')">Calc</button>
+    <button onclick="q('ติดตั้ง requests')">Install</button>
+    <button onclick="q('ls /')">LS /</button>
+    <button onclick="q('ค้นหาข่าว AI ล่าสุด')">ค้นหา</button>
+    <button onclick="listProjects()">โปรเจกต์</button>
+  </div>
+  <div class="input-bar">
+    <textarea id="input" rows="1" placeholder="พิมพ์อะไรก็ได้..."
+              onkeydown="key(event)" oninput="rz(this)"></textarea>
+    <button class="send-btn" id="sendBtn" onclick="send()">▶</button>
+  </div>
+</main>
+<div id="drawer" class="drawer">
+  <div class="drawer-inner">
+    <h3>เมนู</h3>
+    <button onclick="listProjects()">โปรเจกต์</button>
+    <button onclick="clearLog()">ล้าง Log</button>
+    <button onclick="logout()">ออก</button>
+    <div class="drawer-footer"><small>MAXAI</small></div>
+  </div>
+</div>
+<div id="modal" class="modal">
+  <div class="modal-box">
+    <h3 id="modalTitle"></h3>
+    <div id="modalBody"></div>
+    <button class="close-btn" onclick="closeModal()">ปิด</button>
+  </div>
+</div>
+<div id="preview" class="preview">
+  <div class="preview-bar">
+    <span>Preview</span>
+    <div>
+      <a id="previewOpen" target="_blank" style="color:#38bdf8;margin-right:12px">↗</a>
+      <button onclick="closePreview()">✕</button>
+    </div>
+  </div>
+  <iframe id="previewFrame"></iframe>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
