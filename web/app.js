@@ -32,7 +32,7 @@ log('USER: '+task,'user');
 const b=document.getElementById('sendBtn');
 b.disabled=true;b.textContent='...';
 try{
-const r=await api('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:task})});
+const r=await api('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:task})});
 const d=await r.json();
 if(d.log){
 d.log.split('\n').forEach(function(line){
