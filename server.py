@@ -1,6 +1,4 @@
-— Private AI Agent"""
-MAXAI
-"""
+# MAXAI Private AI Agent
 import os, io, json, ast, zipfile, subprocess, sys, secrets
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import HTMLResponse, Response, FileResponse
@@ -19,8 +17,12 @@ WORKSPACE = os.path.abspath("./workspace")
 os.makedirs(WORKSPACE, exist_ok=True)
 
 app = FastAPI(title="MAXAI")
-app.add_middleware(CORSMiddleware, allow_origins=["*"],
-                   allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 os.makedirs("web", exist_ok=True)
 app.mount("/static", StaticFiles(directory="web"), name="static")
 
@@ -64,12 +66,15 @@ def ask_ai(prompt, system="", json_mode=False, timeout=300):
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     try:
-        r = requests.post(f"{AI_URL}/chat/completions", json=payload,
-                         headers={"Authorization": f"Bearer {AI_KEY}"},
-                         timeout=timeout)
+        r = requests.post(
+            AI_URL + "/chat/completions",
+            json=payload,
+            headers={"Authorization": "Bearer " + AI_KEY},
+            timeout=timeout,
+        )
         return r.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        return f"AI error: {e}"
+        return "AI error: " + str(e)
 
 
 def strip_fence(t):
@@ -83,11 +88,11 @@ def strip_fence(t):
 
 
 TOOLS_DESC = """
-- shell(cmd): shell command
-- python(code): run python
+- shell(cmd): run shell command
+- python(code): run python code
 - write(path, content): write file
 - read(path): read file
-- ls(path): list dir
+- ls(path): list directory
 - install(package): pip install
 - curl(url): HTTP GET
 - post(url, data): HTTP POST
@@ -101,61 +106,81 @@ TOOLS_DESC = """
 
 
 def agent_run(task, max_steps=15):
-    log = [f"USER: {task}"]
+    log = ["USER: " + task]
     history = []
     for step in range(max_steps):
         hist = "\n".join(history[-8:])
-        system = f"You are MAXAI. Tools:\n{TOOLS_DESC}\nHistory:\n{hist}\nRespond JSON: {{\"tool\":\"name\",\"args\":{{...}}}} or {{\"tool\":\"__done__\",\"args\":{{\"answer\":\"...\"}}}}"
-        raw = ask_ai(f"Task: {task}", system=system, json_mode=True)
+        system = (
+            "You are MAXAI.\nTools:\n" + TOOLS_DESC +
+            "\nHistory:\n" + hist +
+            '\nRespond JSON: {"tool":"name","args":{...}} or '
+            '{"tool":"__done__","args":{"answer":"..."}}'
+        )
+        raw = ask_ai("Task: " + task, system=system, json_mode=True)
         try:
             d = json.loads(strip_fence(raw))
         except:
-            log.append(f"parse error: {raw[:200]}")
+            log.append("parse error: " + raw[:200])
             break
         name = d.get("tool")
         args = d.get("args", {})
-        log.append(f"[{name}] {str(args)[:120]}")
+        log.append("[" + str(name) + "] " + str(args)[:120])
         if name == "__done__":
             ans = args.get("answer", "")
-            log.append(f"DONE: {ans}")
+            log.append("DONE: " + ans)
             return {"ok": True, "log": "\n".join(log), "answer": ans}
         try:
             result = run_tool(name, args)
-            log.append(f"result: {str(result)[:500]}")
-            history.append(f"{name} -> {str(result)[:150]}")
+            log.append("result: " + str(result)[:500])
+            history.append(str(name) + " -> " + str(result)[:150])
         except Exception as e:
-            log.append(f"error: {e}")
+            log.append("error: " + str(e))
     return {"ok": True, "log": "\n".join(log), "answer": "(done)"}
 
+
 def run_tool(name, args):
-    fns = {"shell": _shell, "python": _python, "write": _write,
-           "read": _read, "ls": _ls, "install": _install,
-           "curl": _curl, "post": _post, "download": _download,
-           "search": _search, "scrape": _scrape,
-           "build_site": _build_site, "gen_code": _gen_code, "ask": _ask}
+    fns = {
+        "shell": _shell, "python": _python, "write": _write,
+        "read": _read, "ls": _ls, "install": _install,
+        "curl": _curl, "post": _post, "download": _download,
+        "search": _search, "scrape": _scrape,
+        "build_site": _build_site, "gen_code": _gen_code, "ask": _ask,
+    }
     fn = fns.get(name)
-    return fn(**args) if fn else f"unknown {name}"
+    if not fn:
+        return "unknown " + str(name)
+    return fn(**args)
 
 
 def _shell(cmd):
     try:
         r = subprocess.run(cmd, shell=True, capture_output=True,
                           text=True, timeout=120, cwd=WORKSPACE)
-        return f"Exit {r.returncode}\n{r.stdout[:3000]}\n{r.stderr[:1000]}"
+        out = "Exit " + str(r.returncode) + "\n"
+        if r.stdout:
+            out += r.stdout[:3000] + "\n"
+        if r.stderr:
+            out += r.stderr[:1000]
+        return out
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
 
 
 def _python(code):
     path = os.path.join(WORKSPACE, "_run.py")
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         f.write(code)
     try:
         r = subprocess.run([sys.executable, path], capture_output=True,
                           text=True, timeout=60, cwd=WORKSPACE)
-        return f"Exit {r.returncode}\n{r.stdout[:2500]}\n{r.stderr[:1000]}"
+        out = "Exit " + str(r.returncode) + "\n"
+        if r.stdout:
+            out += r.stdout[:2500] + "\n"
+        if r.stderr:
+            out += r.stderr[:1000]
+        return out
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
 
 
 def _write(path, content):
@@ -164,7 +189,7 @@ def _write(path, content):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
-    return f"written {path}"
+    return "written " + path
 
 
 def _read(path):
@@ -173,46 +198,50 @@ def _read(path):
     if not os.path.isfile(path):
         return "not found"
     try:
-        return open(path, encoding="utf-8").read()[:8000]
+        with open(path, encoding="utf-8") as f:
+            return f.read()[:8000]
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
 
 
 def _ls(path="."):
     if not os.path.isabs(path):
         path = os.path.join(WORKSPACE, path)
     try:
-        return "\n".join(os.listdir(path)[:100]) or "(empty)"
+        items = os.listdir(path)
+        return "\n".join(items[:100]) or "(empty)"
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
 
 
 def _install(package):
     try:
-        r = subprocess.run([sys.executable, "-m", "pip", "install",
-                          package, "-q"], capture_output=True,
-                          text=True, timeout=300)
-        return f"OK {package}" if r.returncode == 0 else f"fail: {r.stderr[:500]}"
+        r = subprocess.run(
+            [sys.executable, "-m", "pip", "install", package, "-q"],
+            capture_output=True, text=True, timeout=300)
+        if r.returncode == 0:
+            return "OK " + package
+        return "fail: " + r.stderr[:500]
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
 
 
 def _curl(url):
     try:
         r = requests.get(url, timeout=30,
                         headers={"User-Agent": "Mozilla/5.0"})
-        return f"{r.status_code}\n{r.text[:4000]}"
+        return str(r.status_code) + "\n" + r.text[:4000]
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
 
 
 def _post(url, data):
     try:
         obj = json.loads(data) if isinstance(data, str) else data
         r = requests.post(url, json=obj, timeout=30)
-        return f"{r.status_code}\n{r.text[:3000]}"
+        return str(r.status_code) + "\n" + r.text[:3000]
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
 
 
 def _download(url, path=""):
@@ -227,24 +256,25 @@ def _download(url, path=""):
         with open(path, "wb") as f:
             for chunk in r.iter_content(8192):
                 f.write(chunk)
-        return f"downloaded {path}"
+        return "downloaded " + path
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
 
 
 def _search(query):
     try:
         from urllib.parse import quote
         from bs4 import BeautifulSoup
-        url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
+        url = "https://html.duckduckgo.com/html/?q=" + quote(query)
         r = requests.get(url, timeout=20,
                         headers={"User-Agent": "Mozilla/5.0"})
         soup = BeautifulSoup(r.text, "html.parser")
-        out = [f"• {a.get_text(strip=True)}"
-               for a in soup.select(".result__a")[:8]]
+        out = []
+        for a in soup.select(".result__a")[:8]:
+            out.append("* " + a.get_text(strip=True))
         return "\n".join(out) or "(none)"
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
 
 
 def _scrape(url):
@@ -257,16 +287,22 @@ def _scrape(url):
             s.decompose()
         return soup.get_text(separator="\n", strip=True)[:5000]
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
 
 
 def _build_site(prompt):
-    system = 'Build a static website. Respond JSON: {"project":"shop","title":"x","files":[{"path":"index.html","content":"..."},{"path":"style.css","content":"..."}]}. Use HTML/CSS/JS only. Thai UI.'
+    system = (
+        'Build a static website. Respond JSON: '
+        '{"project":"shop","title":"x","files":['
+        '{"path":"index.html","content":"..."},'
+        '{"path":"style.css","content":"..."}]}. '
+        'Use HTML/CSS/JS only. Thai UI.'
+    )
     raw = ask_ai(prompt, system=system, json_mode=True)
     try:
         d = json.loads(strip_fence(raw))
     except Exception as e:
-        return f"error: {e}"
+        return "error: " + str(e)
     project = "".join(c for c in d.get("project", "site").lower()
                      if c.isalnum() or c == "_") or "site"
     files = d.get("files", [])
@@ -280,20 +316,25 @@ def _build_site(prompt):
             continue
         full = os.path.join(base, p)
         os.makedirs(os.path.dirname(full) or base, exist_ok=True)
-        open(full, "w", encoding="utf-8").write(c)
-    return f"OK {project} ({len(files)} files)\n/site/{project}/index.html"
+        with open(full, "w", encoding="utf-8") as fp:
+            fp.write(c)
+    return "OK " + project + " (" + str(len(files)) + " files)\n/site/" + project + "/index.html"
 
 
 def _gen_code(desc, filename="main.py"):
     lang = "python"
-    if filename.endswith(".js"): lang = "javascript"
-    elif filename.endswith(".html"): lang = "html"
-    elif filename.endswith(".css"): lang = "css"
-    raw = ask_ai(f"Write {lang} code: {desc}",
-                system=f"Write complete {lang} code. Only code.")
+    if filename.endswith(".js"):
+        lang = "javascript"
+    elif filename.endswith(".html"):
+        lang = "html"
+    elif filename.endswith(".css"):
+        lang = "css"
+    raw = ask_ai(
+        "Write " + lang + " code: " + desc,
+        system="Write complete " + lang + " code. Only code.")
     code = strip_fence(raw)
     _write(filename, code)
-    return f"OK {filename}"
+    return "OK " + filename
 
 
 def _ask(prompt):
@@ -310,7 +351,8 @@ class RunReq(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return open("web/index.html", encoding="utf-8").read()
+    with open("web/index.html", encoding="utf-8") as f:
+        return f.read()
 
 
 @app.get("/manifest.json")
@@ -337,12 +379,22 @@ async def login(r: LoginReq):
 
 
 @app.post("/api/run")
-async def run(r: RunReq, token: str = Depends(require_auth)):
+async def run(r: RunReq, token: str = Header(None)):
+    if not token:
+        raise HTTPException(401)
+    tk = token.replace("Bearer ", "").strip()
+    if not auth.verify(tk):
+        raise HTTPException(401)
     return agent_run(r.text)
 
 
 @app.get("/api/projects")
-async def projects(token: str = Depends(require_auth)):
+async def projects(token: str = Header(None)):
+    if not token:
+        raise HTTPException(401)
+    tk = token.replace("Bearer ", "").strip()
+    if not auth.verify(tk):
+        raise HTTPException(401)
     out = []
     for name in os.listdir(WORKSPACE):
         if name.startswith("_"):
@@ -358,7 +410,10 @@ async def projects(token: str = Depends(require_auth)):
 
 
 @app.get("/api/download/{project}")
-async def download(project: str, token: str = Depends(require_auth)):
+async def download(project: str, token: str = Header(None)):
+    tk = token.replace("Bearer ", "").strip() if token else ""
+    if not auth.verify(tk):
+        raise HTTPException(401)
     project = "".join(c for c in project if c.isalnum() or c in "_-.")
     full = os.path.join(WORKSPACE, project)
     if not os.path.exists(full):
@@ -373,10 +428,13 @@ async def download(project: str, token: str = Depends(require_auth)):
                     fp = os.path.join(root, f)
                     zf.write(fp, os.path.relpath(fp, full))
     buf.seek(0)
-    return Response(content=buf.getvalue(),
-                   media_type="application/zip",
-                   headers={"Content-Disposition":
-                           f'attachment; filename="{project}.zip"'})
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition":
+                'attachment; filename="' + project + '.zip"'
+        })
 
 
 @app.get("/site/{project}/{path:path}")
@@ -393,13 +451,15 @@ async def site(project: str, path: str = "index.html"):
     if not os.path.isfile(full):
         raise HTTPException(404)
     ext = os.path.splitext(full)[1].lower()
-    mime = {".html": "text/html; charset=utf-8",
-            ".css": "text/css; charset=utf-8",
-            ".js": "application/javascript; charset=utf-8",
-            ".json": "application/json; charset=utf-8",
-            ".svg": "image/svg+xml",
-            ".png": "image/png",
-            ".jpg": "image/jpeg"}.get(ext, "application/octet-stream")
+    mime = {
+        ".html": "text/html; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".js": "application/javascript; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".svg": "image/svg+xml",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+    }.get(ext, "application/octet-stream")
     with open(full, "rb") as f:
         return Response(content=f.read(), media_type=mime)
 
