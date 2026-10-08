@@ -267,17 +267,21 @@ TOOLS_DESC = """
 - remember(key, value): save a fact to memory
 - recall(key): get a fact from memory
 - forget(key): delete a fact
+- build_and_run(prompt): สร้างเว็บ + รันอัตโนมัติ
+- run_project(project): รันโปรเจกต์ที่สร้างแล้ว
+- stop_project(project): หยุดโปรเจกต์
+- list_running(): ดูโปรเจกต์ที่รันอยู่
 """
 
 
 AGENT_SYS = (
-    "You are MAXAI, an autonomous agent with full tool access. "
-    "You can do anything the user asks. No restrictions on topics.\n"
+    "คุณคือ MAXAI Agent ทำงานอัตโนมัติ\n"
+    "ถ้าผู้ใช้อยากสร้างเว็บ → ใช้ build_and_run (สร้าง+รันทันที)\n"
     "TOOLS:\n" + TOOLS_DESC + "\n\n"
-    "Respond with JSON only:\n"
-    '{"tool":"name","args":{...}} to use a tool\n'
-    '{"tool":"__done__","args":{"answer":"..."}} to finish\n'
-    "Use tools step by step. Answer in Thai."
+    "ตอบเป็น JSON เท่านั้น:\n"
+    '{"tool":"name","args":{...}}\n'
+    '{"tool":"__done__","args":{"answer":"..."}}\n'
+    "ภาษาไทย"
 )
 
 CHAT_SYS = (
@@ -326,8 +330,11 @@ def run_tool(name, args):
         "curl": _curl, "post": _post, "download": _download,
         "search": _search, "scrape": _scrape,
         "build_site": _build_site, "gen_code": _gen_code, "ask": _ask,
-        "save_data": _gh_save, "load_data": _gh_load, "list_data": _gh_list,
-        "remember": _remember, "recall": _recall, "forget": _forget,
+        "save_data": _gh_save, "load_data": _gh_load, "list_data": _gh_list,"remember": _remember, "recall": _recall, "forget": _forget,
+        "build_and_run": _build_and_run,
+        "run_project": _rp,
+        "stop_project": _sp,
+        "list_running": _lr,
     }
     fn = fns.get(name)
     if not fn:
@@ -728,6 +735,23 @@ def _forget(key):
     return "not found"
 
 
+def _rp(project):
+    r = run_project(project)
+    return r.get("log", "") + " | URL: " + r.get("url", "-")
+
+
+def _sp(project):
+    stop_app(project)
+    return "stopped " + project
+
+
+def _lr():
+    if not RUNNING:
+        return "(none)"
+    return "\n".join([k + " -> " + v.get("url", "-")
+                     for k, v in RUNNING.items()])
+
+
 def _build_and_run(prompt):
     """สร้างเว็บ + รันอัตโนมัติ"""
     system = (
@@ -917,6 +941,69 @@ async def site(project: str, path: str = "index.html"):
     }.get(ext, "application/octet-stream")
     with open(full, "rb") as f:
         return Response(content=f.read(), media_type=mime)
+
+
+@app.api_route("/app/{project}/{path:path}",
+              methods=["GET", "POST", "PUT", "DELETE"])
+async def proxy(project: str, path: str, request: Request):
+    if project not in RUNNING:
+        # Fallback: serve static
+        base = os.path.abspath(os.path.join(WORKSPACE, project))
+        if not os.path.isdir(base):
+            raise HTTPException(404)
+        target = path or "index.html"
+        full = os.path.abspath(os.path.join(base, target))
+        if not full.startswith(base):
+            raise HTTPException(403)
+        if os.path.isdir(full):
+            full = os.path.join(full, "index.html")
+        if not os.path.isfile(full):
+            raise HTTPException(404)
+        ext = os.path.splitext(full)[1].lower()
+        mime = {
+            ".html": "text/html; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+        }.get(ext, "text/plain")
+        with open(full, "rb") as f:
+            return Response(content=f.read(), media_type=mime)
+
+    info = RUNNING[project]
+    if info.get("type") == "static":
+        base = os.path.abspath(os.path.join(WORKSPACE, project))
+        target = path or info.get("entry", "index.html")
+        full = os.path.abspath(os.path.join(base, target))
+        if not full.startswith(base):
+            raise HTTPException(403)
+        if not os.path.isfile(full):
+            raise HTTPException(404)
+        ext = os.path.splitext(full)[1].lower()
+        mime = {
+            ".html": "text/html; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".js": "application/javascript; charset=utf-8",
+        }.get(ext, "text/plain")
+        with open(full, "rb") as f:
+            return Response(content=f.read(), media_type=mime)
+
+    port = info["port"]
+    url = "http://127.0.0.1:" + str(port) + "/" + path
+    body = await request.body()
+    try:
+        r = requests.request(
+            request.method, url,
+            headers={k: v for k, v in request.headers.items()
+                    if k.lower() not in ["host", "content-length"]},
+            data=body, params=dict(request.query_params),
+            allow_redirects=False, timeout=60)
+        return Response(content=r.content, status_code=r.status_code,
+                       headers={k: v for k, v in r.headers.items()
+                               if k.lower() not in
+                               ["content-encoding", "content-length",
+                                "transfer-encoding"]},
+                       media_type=r.headers.get("content-type"))
+    except Exception as e:
+        return HTMLResponse("<pre>" + str(e) + "</pre>", status_code=502)
 
 
 if __name__ == "__main__":
