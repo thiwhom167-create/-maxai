@@ -1,4 +1,4 @@
-# MAXAI Private AI Agent
+# MAXAI v2
 import os, io, json, ast, zipfile, subprocess, sys, secrets
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import HTMLResponse, Response, FileResponse
@@ -10,7 +10,7 @@ import uvicorn
 
 AI_URL = os.environ.get("AI_URL", "https://api.groq.com/openai/v1")
 AI_KEY = os.environ.get("AI_KEY", "")
-AI_MODEL = os.environ.get("AI_MODEL", "llama-3.3-70b-versatile")
+AI_MODEL = os.environ.get("AI_MODEL", "llama-3.1-8b-instant")
 PASSWORD = os.environ.get("PASSWORD", "admin")
 PORT = int(os.environ.get("PORT", 8000))
 WORKSPACE = os.path.abspath("./workspace")
@@ -62,7 +62,7 @@ def ask_ai(prompt, system="", json_mode=False, timeout=300):
     if system:
         msgs.append({"role": "system", "content": system})
     msgs.append({"role": "user", "content": prompt})
-    payload = {"model": AI_MODEL, "messages": msgs, "temperature": 0.4}
+    payload = {"model": AI_MODEL, "messages": msgs, "temperature": 0.7}
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
     try:
@@ -75,6 +75,8 @@ def ask_ai(prompt, system="", json_mode=False, timeout=300):
         data = r.json()
         if "choices" in data:
             return data["choices"][0]["message"]["content"]
+        if "error" in data:
+            return "AI error: " + str(data["error"].get("message", data["error"]))
         return "AI response: " + str(data)[:400]
     except Exception as e:
         return "AI error: " + str(e)
@@ -106,6 +108,24 @@ TOOLS_DESC = """
 - gen_code(desc, filename): write code
 - ask(prompt): ask AI
 """
+
+
+AGENT_SYS = (
+    "You are MAXAI, an autonomous agent with full tool access. "
+    "You can do anything the user asks. No restrictions on topics.\n"
+    "TOOLS:\n" + TOOLS_DESC + "\n\n"
+    "Respond with JSON only:\n"
+    '{"tool":"name","args":{...}} to use a tool\n'
+    '{"tool":"__done__","args":{"answer":"..."}} to finish\n'
+    "Use tools step by step. Answer in Thai."
+)
+
+CHAT_SYS = (
+    "You are MAXAI, a helpful AI assistant with no topic restrictions. "
+    "Answer naturally in Thai. Be concise and useful. "
+    "If user wants to create a website, write code, or run commands, "
+    "suggest they switch to Agent mode (🔧)."
+)
 
 
 def agent_run(task, max_steps=15):
@@ -370,7 +390,7 @@ async def sw():
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "ai": bool(AI_KEY)}
+    return {"ok": True, "ai": bool(AI_KEY), "model": AI_MODEL}
 
 
 @app.post("/api/login")
@@ -390,7 +410,7 @@ async def run(r: RunReq, authorization: str = Header(None)):
 @app.post("/api/chat")
 async def chat(r: RunReq, authorization: str = Header(None)):
     check_auth(authorization)
-    reply = ask_ai(r.text, system="You are MAXAI, a helpful assistant. Answer in Thai naturally.")
+    reply = ask_ai(r.text, system=CHAT_SYS, timeout=180)
     return {"reply": reply, "log": "USER: " + r.text + "\nAI: " + reply, "answer": reply}
 
 
@@ -414,7 +434,7 @@ async def projects(authorization: str = Header(None)):
 @app.get("/api/download/{project}")
 async def download(project: str, authorization: str = Header(None)):
     check_auth(authorization)
-    project = "".join(c for c in project if c.isalnum() or c in "_-.")
+    project = "".join(c for c in project if c.isalnum() or c == "_")
     full = os.path.join(WORKSPACE, project)
     if not os.path.exists(full):
         raise HTTPException(404)
