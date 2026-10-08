@@ -46,13 +46,13 @@ class Auth:
 auth = Auth(PASSWORD)
 
 
-async def require_auth(authorization: str = Header(None)):
+def check_auth(authorization):
     if not authorization:
         raise HTTPException(401, "Missing token")
-    token = authorization.replace("Bearer ", "").strip()
-    if not auth.verify(token):
+    tk = authorization.replace("Bearer ", "").strip()
+    if not auth.verify(tk):
         raise HTTPException(401, "Invalid token")
-    return token
+    return tk
 
 
 def ask_ai(prompt, system="", json_mode=False, timeout=300):
@@ -379,22 +379,14 @@ async def login(r: LoginReq):
 
 
 @app.post("/api/run")
-async def run(r: RunReq, token: str = Header(None)):
-    if not token:
-        raise HTTPException(401)
-    tk = token.replace("Bearer ", "").strip()
-    if not auth.verify(tk):
-        raise HTTPException(401)
+async def run(r: RunReq, authorization: str = Header(None)):
+    check_auth(authorization)
     return agent_run(r.text)
 
 
 @app.get("/api/projects")
-async def projects(token: str = Header(None)):
-    if not token:
-        raise HTTPException(401)
-    tk = token.replace("Bearer ", "").strip()
-    if not auth.verify(tk):
-        raise HTTPException(401)
+async def projects(authorization: str = Header(None)):
+    check_auth(authorization)
     out = []
     for name in os.listdir(WORKSPACE):
         if name.startswith("_"):
@@ -410,10 +402,8 @@ async def projects(token: str = Header(None)):
 
 
 @app.get("/api/download/{project}")
-async def download(project: str, token: str = Header(None)):
-    tk = token.replace("Bearer ", "").strip() if token else ""
-    if not auth.verify(tk):
-        raise HTTPException(401)
+async def download(project: str, authorization: str = Header(None)):
+    check_auth(authorization)
     project = "".join(c for c in project if c.isalnum() or c in "_-.")
     full = os.path.join(WORKSPACE, project)
     if not os.path.exists(full):
@@ -439,10 +429,10 @@ async def download(project: str, token: str = Header(None)):
 
 @app.get("/site/{project}/{path:path}")
 async def site(project: str, path: str = "index.html"):
-    project = "".join(c for c in project if c.isalnum() or c == "_")
-    if not project or ".." in path:
+    project.join = "".join(c for c in project if(W c.isalnum() or c == "_ORKSPACE")
+    if not project or, ".." in path:
         raise HTTPException(400)
-    base = os.path.abspath(os.path.join(WORKSPACE, project))
+    base = os.path.abspath(os.path project))
     full = os.path.abspath(os.path.join(base, path))
     if not full.startswith(base):
         raise HTTPException(403)
