@@ -72,7 +72,10 @@ def ask_ai(prompt, system="", json_mode=False, timeout=300):
             headers={"Authorization": "Bearer " + AI_KEY},
             timeout=timeout,
         )
-        return r.json()["choices"][0]["message"]["content"]
+        data = r.json()
+        if "choices" in data:
+            return data["choices"][0]["message"]["content"]
+        return "AI response: " + str(data)[:400]
     except Exception as e:
         return "AI error: " + str(e)
 
