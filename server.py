@@ -429,10 +429,10 @@ async def download(project: str, authorization: str = Header(None)):
 
 @app.get("/site/{project}/{path:path}")
 async def site(project: str, path: str = "index.html"):
-    project.join = "".join(c for c in project if(W c.isalnum() or c == "_ORKSPACE")
-    if not project or, ".." in path:
+    project = "".join(c for c in project if c.isalnum() or c in "_-.")
+    if not project or ".." in path:
         raise HTTPException(400)
-    base = os.path.abspath(os.path project))
+    base = os.path.abspath(os.path.join(WORKSPACE, project))
     full = os.path.abspath(os.path.join(base, path))
     if not full.startswith(base):
         raise HTTPException(403)
