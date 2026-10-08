@@ -56,10 +56,28 @@ async function send(){
   try{
     const url=MODE==='chat'?'/api/chat':'/api/run';
     const r=await api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:task})});
-    const d=await r.json();
+    let d={};
+    try{ d=await r.json(); }catch(e){
+      log('error: เซิร์ฟเวอร์ตอบกลับไม่ใช่ JSON (HTTP '+r.status+')','err');
+      return;
+    }
+    if(!r.ok){
+      const err=d.error||d.detail||d.message||d.reply||d.answer||'ส่งข้อความไม่สำเร็จ';
+      const textErr=typeof err==='string'?err:JSON.stringify(err);
+      if(textErr.indexOf('billing_not_active')!==-1||textErr.indexOf('Billing')!==-1||textErr.indexOf('billing')!==-1){
+        log('OpenAI ยังไม่เปิดใช้งาน Billing/API จึงส่งข้อความไม่ได้ — เปิด Billing ของ OpenAI API แล้วลองใหม่','err');
+      }else{
+        log('AI error: '+textErr,'err');
+      }
+      return;
+    }
     if(MODE==='chat'){
       const reply=d.reply||d.answer||d.log||'';
-      log('AI: '+reply,'ok');
+      if(reply.indexOf('AI error:')===0){
+        log(reply,'err');
+      }else{
+        log('AI: '+reply,'ok');
+      }
     }else{
       if(d.log){
         d.log.split('\n').forEach(function(line){
