@@ -12,6 +12,50 @@ import base64
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO = os.environ.get("GITHUB_REPO", "")
 DATA_DIR = "data"
+MEMORY_FILE = "memory.json"
+
+def load_memory():
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return {}
+    import base64
+    url = "https://api.github.com/repos/" + GITHUB_REPO + "/contents/" + MEMORY_FILE
+    headers = {"Authorization": "token " + GITHUB_TOKEN, "Accept": "application/vnd.github+json"}
+    r = requests.get(url, headers=headers, timeout=15)
+    if r.status_code != 200:
+        return {}
+    try:
+        content = r.json().get("content", "")
+        return json.loads(base64.b64decode(content).decode("utf-8"))
+    except:
+        return {}
+
+def save_memory(mem):
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return "no github"
+    import base64
+    url = "https://api.github.com/repos/" + GITHUB_REPO + "/contents/" + MEMORY_FILE
+    headers = {"Authorization": "token " + GITHUB_TOKEN, "Accept": "application/vnd.github+json"}
+    sha = None
+    r = requests.get(url, headers=headers, timeout=15)
+    if r.status_code == 200:
+        sha = r.json().get("sha")
+    data = {
+        "message": "update memory",
+        "content": base64.b64encode(json.dumps(mem, ensure_ascii=False).encode()).decode(),
+    }
+    if sha:
+        data["sha"] = sha
+    requests.put(url, json=data, headers=headers, timeout=20)
+    return "ok"
+
+def get_memory_context():
+    mem = load_memory()
+    if not mem:
+        return ""
+    lines = ["FACTS I KNOW ABOUT USER:"]
+    for k, v in mem.items():
+        lines.append("- " + k + ": " + str(v))
+    return "\n".join(lines)
 
 AI_URL = os.environ.get("AI_URL", "https://api.groq.com/openai/v1")
 AI_KEY = os.environ.get("AI_KEY", "")
@@ -63,6 +107,9 @@ def check_auth(authorization):
 def ask_ai(prompt, system="", json_mode=False, timeout=300):
     if not AI_KEY:
         return "no AI key"
+    mem_ctx = get_memory_context()
+    if mem_ctx:
+        system = (system + "\n\n" + mem_ctx) if system else mem_ctx
     msgs = []
     if system:
         msgs.append({"role": "system", "content": system})
@@ -115,6 +162,9 @@ TOOLS_DESC = """
 - save_data(name, content): save data permanently (GitHub)
 - load_data(name): load saved data
 - list_data(): list all saved data
+- remember(key, value): save a fact to memory
+- recall(key): get a fact from memory
+- forget(key): delete a fact
 """
 
 
@@ -174,6 +224,7 @@ def run_tool(name, args):
         "search": _search, "scrape": _scrape,
         "build_site": _build_site, "gen_code": _gen_code, "ask": _ask,
         "save_data": _gh_save, "load_data": _gh_load, "list_data": _gh_list,
+        "remember": _remember, "recall": _recall, "forget": _forget,
     }
     fn = fns.get(name)
     if not fn:
@@ -426,6 +477,31 @@ def _gh_list():
         return "(empty)"
     items = r.json()
     return "\n".join([i["name"] for i in items]) or "(empty)"
+
+
+def _remember(key, value):
+    mem = load_memory()
+    mem[key] = value
+    save_memory(mem)
+    return "remembered: " + key + " = " + value
+
+
+def _recall(key=""):
+    mem = load_memory()
+    if not key:
+        if not mem:
+            return "(memory empty)"
+        return "\n".join([k + ": " + str(v) for k, v in mem.items()])
+    return mem.get(key, "not found")
+
+
+def _forget(key):
+    mem = load_memory()
+    if key in mem:
+        del mem[key]
+        save_memory(mem)
+        return "forgot: " + key
+    return "not found"
 
 
 class LoginReq(BaseModel):
